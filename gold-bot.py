@@ -11,8 +11,11 @@ warnings.filterwarnings('ignore')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 
+# הוסף סימבולים יציבים יותר ל-Yahoo Finance
+DEFAULT_SYMBOLS = ['GC=F', 'GLD', 'IAU', 'GOLD', 'XAUUSD=X']
+
+
 def send_telegram_message(message):
-    """שלח הודעה לטלגרם"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": message}
@@ -24,10 +27,8 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Error: {e}")
 
+
 def fetch_yahoo_fast(symbol, interval="1h", period_days=60):
-    """
-    מביא נתוני מחיר מ-Yahoo דרך ה-API המהיר (עובד ב- GitHub Actions).
-    """
     end = int(datetime.utcnow().timestamp())
     start = int((datetime.utcnow() - timedelta(days=period_days)).timestamp())
 
@@ -41,30 +42,35 @@ def fetch_yahoo_fast(symbol, interval="1h", period_days=60):
         "Accept": "application/json"
     }
 
-    r = requests.get(url, headers=headers)
-    data = r.json()
-
-    if "chart" not in data or data["chart"]["result"] is None:
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"❌ Error fetching {symbol}: {e}")
         return pd.DataFrame()
 
-    result = data["chart"]["result"][0]
-    timestamps = result["timestamp"]
-    indicators = result["indicators"]["quote"][0]
+    if 'chart' not in data or data['chart']['result'] is None:
+        return pd.DataFrame()
+
+    result = data['chart']['result'][0]
+    timestamps = result['timestamp']
+    indicators = result['indicators']['quote'][0]
 
     df = pd.DataFrame({
-        "Date": pd.to_datetime(timestamps, unit="s"),
-        "Open": indicators["open"],
-        "High": indicators["high"],
-        "Low": indicators["low"],
-        "Close": indicators["close"],
-        "Volume": indicators["volume"],
+        "Date": pd.to_datetime(timestamps, unit='s'),
+        "Open": indicators['open'],
+        "High": indicators['high'],
+        "Low": indicators['low'],
+        "Close": indicators['close'],
+        "Volume": indicators['volume'],
     })
 
-    df.set_index("Date", inplace=True)
+    df.set_index('Date', inplace=True)
     return df.dropna()
 
+
 def calculate_indicators(data):
-    """חשב את כל האינדיקטורים"""
     data['SMA20'] = ta.trend.sma_indicator(data['Close'], window=20)
     data['SMA50'] = ta.trend.sma_indicator(data['Close'], window=50)
     data['EMA20'] = ta.trend.ema_indicator(data['Close'], window=20)
@@ -76,6 +82,7 @@ def calculate_indicators(data):
     data['BB_Lower'] = bb.bollinger_lband()
     data['ATR'] = ta.volatility.average_true_range(data['High'], data['Low'], data['Close'], window=14)
     return data
+
 
 def generate_signal(data):
     latest = data.iloc[-1]
@@ -97,6 +104,7 @@ def generate_signal(data):
     elif sell_score >= 4: return 'SELL', sell_score
     else: return 'HOLD', max(buy_score, sell_score)
 
+
 def calculate_sl_tp(data, signal):
     latest = data.iloc[-1]
     atr = latest['ATR']
@@ -105,26 +113,21 @@ def calculate_sl_tp(data, signal):
     elif signal == 'SELL': return price + (atr * 1.5), price - (atr * 3)
     else: return None, None
 
+
 def run_bot():
     print("\n" + "="*50)
     print(f"🤖 Gold Bot Running at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*50)
 
-    symbols = ['GC=F', 'GLD', 'IAU', 'GOLD']
     data = None
     used_symbol = None
 
-    for symbol in symbols:
-        try:
-            print(f"📊 Trying {symbol}...")
-            data = fetch_yahoo_fast(symbol, interval="1h", period_days=60)
-            if not data.empty and len(data) > 50:
-                used_symbol = symbol
-                print(f"✅ Success with {symbol}")
-                break
-        except Exception as e:
-            print(f"❌ Failed {symbol}: {e}")
-            continue
+    for symbol in DEFAULT_SYMBOLS:
+        data = fetch_yahoo_fast(symbol, interval="1h", period_days=60)
+        if not data.empty and len(data) > 50:
+            used_symbol = symbol
+            print(f"✅ Success with {symbol}")
+            break
 
     if data is None or data.empty:
         message = "⚠️ Unable to fetch gold data from any source"
@@ -201,6 +204,7 @@ Next check in 30 minutes...
             print("📨 Status update sent")
 
     print("\n✅ Bot run completed successfully!")
+
 
 if __name__ == "__main__":
     run_bot()
