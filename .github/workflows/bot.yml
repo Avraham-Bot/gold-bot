@@ -33,5 +33,5 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           echo "Starting Gold Bot..."
-          python gold_bot.py
+          python gold-bot.py
           echo "Bot finished!"
