@@ -1,8 +1,18 @@
 import pandas as pd
 import yfinance as yf
-yf.utils.get_yf_headers()["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-import ta
 import requests
+
+# --- תיקון ל-GitHub Actions: הוספת User-Agent לכל קריאת yfinance ---
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+})
+
+def yf_download(ticker, **kwargs):
+    return yf.download(ticker, session=session, **kwargs)
+# -------------------------------------------------------------------
+
+import ta
 import numpy as np
 from datetime import datetime
 import os
@@ -121,7 +131,7 @@ def run_bot():
     for symbol in symbols:
         try:
             print(f"📊 Trying {symbol}...")
-            data = yf.download(
+            data = yf_download(
                 symbol, 
                 period="2mo",  # חודשיים
                 interval="1h",  # נרות של שעה
