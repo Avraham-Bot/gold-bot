@@ -1,5 +1,6 @@
 import pandas as pd
 import yfinance as yf
+yf.utils.get_yf_headers()["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 import ta
 import requests
 import numpy as np
@@ -219,4 +220,5 @@ Next check in 30 minutes...
     print("\n✅ Bot run completed successfully!")
 
 if __name__ == "__main__":
+
     run_bot()
