@@ -28,7 +28,7 @@ def send_telegram_message(message):
         print(f"Error: {e}")
 
 
-def fetch_yahoo_fast(symbol, interval="1h", period_days=60):
+def fetch_yahoo_fast(symbol, interval="1h", period_days=90):
     end = int(datetime.utcnow().timestamp())
     start = int((datetime.utcnow() - timedelta(days=period_days)).timestamp())
 
@@ -71,47 +71,105 @@ def fetch_yahoo_fast(symbol, interval="1h", period_days=60):
 
 
 def calculate_indicators(data):
-    data['SMA20'] = ta.trend.sma_indicator(data['Close'], window=20)
+    # אינדיקטורים בלבד
     data['SMA50'] = ta.trend.sma_indicator(data['Close'], window=50)
+    data['SMA200'] = ta.trend.sma_indicator(data['Close'], window=200)
     data['EMA20'] = ta.trend.ema_indicator(data['Close'], window=20)
     data['RSI'] = ta.momentum.rsi(data['Close'], window=14)
-    macd = ta.trend.MACD(data['Close'])
-    data['MACD'] = macd.macd_diff()
-    bb = ta.volatility.BollingerBands(data['Close'])
-    data['BB_Upper'] = bb.bollinger_hband()
-    data['BB_Lower'] = bb.bollinger_lband()
+    data['MACD'] = ta.trend.macd_diff(data['Close'])
     data['ATR'] = ta.volatility.average_true_range(data['High'], data['Low'], data['Close'], window=14)
+    
+    # VWAP
+    data['VWAP'] = ta.volume.volume_weighted_average_price(
+        high=data['High'],
+        low=data['Low'],
+        close=data['Close'],
+        volume=data['Volume']
+    )
+    
+    # Price Action Patterns
+    # Engulfing
+    data['Engulf'] = None
+    for i in range(1, len(data)):
+        current = data.iloc[i]
+        prev = data.iloc[i-1]
+        
+        # Bullish Engulfing
+        if (current['Close'] > current['Open'] and 
+            prev['Close'] < prev['Open'] and 
+            current['Close'] > prev['Open'] and 
+            current['Open'] < prev['Close']):
+            data.iloc[i, data.columns.get_loc('Engulf')] = 'BULL_ENGULF'
+        
+        # Bearish Engulfing
+        elif (current['Close'] < current['Open'] and 
+              prev['Close'] > prev['Open'] and 
+              current['Close'] < prev['Open'] and 
+              current['Open'] > prev['Close']):
+            data.iloc[i, data.columns.get_loc('Engulf')] = 'BEAR_ENGULF'
+    
+    # Pin Bars
+    def pinbar(row):
+        body = abs(row['Close'] - row['Open'])
+        upper_wick = row['High'] - max(row['Close'], row['Open'])
+        lower_wick = min(row['Close'], row['Open']) - row['Low']
+        
+        if lower_wick > body * 2:
+            return 'BULL_PIN'
+        if upper_wick > body * 2:
+            return 'BEAR_PIN'
+        return None
+    
+    data['PinBar'] = data.apply(pinbar, axis=1)
+    
+    # Break of Structure
+    data['Higher_High'] = data['High'] > data['High'].shift(1)
+    data['Lower_Low'] = data['Low'] < data['Low'].shift(1)
+    
     return data
 
 
 def generate_signal(data):
     latest = data.iloc[-1]
-    buy_score = 0
-    if latest['SMA20'] > latest['SMA50']: buy_score += 2
-    if 30 < latest['RSI'] < 70: buy_score += 1
-    if latest['MACD'] > 0: buy_score += 1
-    if latest['Close'] > latest['EMA20']: buy_score += 1
-    if latest['Close'] < latest['BB_Upper']: buy_score += 1
-
-    sell_score = 0
-    if latest['SMA20'] < latest['SMA50']: sell_score += 2
-    if latest['RSI'] > 70 or latest['RSI'] < 30: sell_score += 1
-    if latest['MACD'] < 0: sell_score += 1
-    if latest['Close'] < latest['EMA20']: sell_score += 1
-    if latest['Close'] > latest['BB_Lower']: sell_score += 1
-
-    if buy_score >= 4: return 'BUY', buy_score
-    elif sell_score >= 4: return 'SELL', sell_score
-    else: return 'HOLD', max(buy_score, sell_score)
+    
+    # תנאי קנייה - כל התנאים חייבים להתקיים
+    buy_conditions = [
+        latest['Close'] > latest['VWAP'],
+        latest['SMA50'] > latest['SMA200'],
+        latest['MACD'] > 0,
+        latest['Engulf'] == 'BULL_ENGULF' or latest['PinBar'] == 'BULL_PIN'
+    ]
+    
+    # תנאי מכירה - כל התנאים חייבים להתקיים
+    sell_conditions = [
+        latest['Close'] < latest['VWAP'],
+        latest['SMA50'] < latest['SMA200'],
+        latest['MACD'] < 0,
+        latest['Engulf'] == 'BEAR_ENGULF' or latest['PinBar'] == 'BEAR_PIN'
+    ]
+    
+    if all(buy_conditions):
+        return 'BUY'
+    elif all(sell_conditions):
+        return 'SELL'
+    else:
+        return 'HOLD'
 
 
 def calculate_sl_tp(data, signal):
     latest = data.iloc[-1]
     atr = latest['ATR']
     price = latest['Close']
-    if signal == 'BUY': return price - (atr * 1.5), price + (atr * 3)
-    elif signal == 'SELL': return price + (atr * 1.5), price - (atr * 3)
-    else: return None, None
+    
+    SL_MULT = 1.0
+    TP_MULT = 2.0
+    
+    if signal == 'BUY':
+        return price - (atr * SL_MULT), price + (atr * TP_MULT)
+    elif signal == 'SELL':
+        return price + (atr * SL_MULT), price - (atr * TP_MULT)
+    else:
+        return None, None
 
 
 def run_bot():
@@ -123,8 +181,8 @@ def run_bot():
     used_symbol = None
 
     for symbol in DEFAULT_SYMBOLS:
-        data = fetch_yahoo_fast(symbol, interval="1h", period_days=60)
-        if not data.empty and len(data) > 50:
+        data = fetch_yahoo_fast(symbol, interval="1h", period_days=90)
+        if not data.empty and len(data) > 200:
             used_symbol = symbol
             print(f"✅ Success with {symbol}")
             break
@@ -145,7 +203,7 @@ def run_bot():
         print(f"❌ Error calculating indicators: {e}")
         return
 
-    signal, score = generate_signal(data)
+    signal = generate_signal(data)
     latest = data.iloc[-1]
     price = float(latest['Close'])
     rsi = float(latest['RSI'])
@@ -154,15 +212,22 @@ def run_bot():
     print(f"   Symbol: {used_symbol}")
     print(f"   Price: ${price:.2f}")
     print(f"   RSI: {rsi:.1f}")
-    print(f"   Signal: {signal} (Score: {score}/6)")
+    print(f"   VWAP: ${latest['VWAP']:.2f}")
+    print(f"   SMA50: ${latest['SMA50']:.2f}")
+    print(f"   SMA200: ${latest['SMA200']:.2f}")
+    print(f"   MACD: {latest['MACD']:.2f}")
+    print(f"   Engulf: {latest['Engulf']}")
+    print(f"   Pin Bar: {latest['PinBar']}")
+    print(f"   Signal: {signal}")
 
     if signal != 'HOLD':
         stop_loss, take_profit = calculate_sl_tp(data, signal)
         risk = abs(price - stop_loss)
         reward = abs(take_profit - price)
         risk_reward_ratio = reward / risk if risk > 0 else 0
+        
         message = f"""
-🏆 **GOLD SIGNAL ALERT** 🏆
+🏆 **XAU/USD SIGNAL ALERT** 🏆
 
 📍 Signal: **{signal}**
 💰 Price: ${price:.2f}
@@ -173,12 +238,18 @@ def run_bot():
 📈 Risk/Reward: 1:{risk_reward_ratio:.1f}
 
 📊 **Indicators:**
-- RSI: {rsi:.1f}
-- SMA20: ${latest['SMA20']:.2f}
+- VWAP: ${latest['VWAP']:.2f}
 - SMA50: ${latest['SMA50']:.2f}
+- SMA200: ${latest['SMA200']:.2f}
+- EMA20: ${latest['EMA20']:.2f}
+- RSI: {rsi:.1f}
 - MACD: {latest['MACD']:.2f}
 
-💡 Signal Strength: {score}/6
+🎯 **Price Action:**
+- Engulfing: {latest['Engulf'] if latest['Engulf'] else 'None'}
+- Pin Bar: {latest['PinBar'] if latest['PinBar'] else 'None'}
+- Structure: {'🟢 Higher High' if latest['Higher_High'] else '🔴 Lower Low' if latest['Lower_Low'] else 'Neutral'}
+
 ⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
 
 ⚠️ This is not financial advice. Trade at your own risk!
@@ -194,8 +265,10 @@ def run_bot():
 
 Symbol: {used_symbol}
 Price: ${price:.2f}
+VWAP: ${latest['VWAP']:.2f}
 RSI: {rsi:.1f}
-Trend: {'🟢 Bullish' if latest['SMA20'] > latest['SMA50'] else '🔴 Bearish'}
+Golden Cross: {'✅ Yes' if latest['SMA50'] > latest['SMA200'] else '❌ No'}
+Price Action: {latest['Engulf'] if latest['Engulf'] else latest['PinBar'] if latest['PinBar'] else 'No Pattern'}
 Signal: No action needed
 
 Next check in 30 minutes...
